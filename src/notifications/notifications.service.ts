@@ -76,10 +76,11 @@ export class NotificationsService {
   }
 
   /**
-   * Cron que dispara uma notificação push a cada 5 minutos para todas
-   * as inscrições ativas. Roda no fuso do servidor (UTC em containers).
+   * Cron que dispara uma notificação push uma vez por dia, às 9h da manhã
+   * (horário de Brasília, UTC-3), para todas as inscrições ativas.
+   * Em UTC isso equivale a 12h, já que o cron roda no fuso do servidor.
    */
-  @Cron('*/5 * * * *')
+  @Cron('0 12 * * *')
   async sendScheduledPushNotifications() {
     const subs = await this.prisma.pushSubscription.findMany();
     if (subs.length === 0) {
