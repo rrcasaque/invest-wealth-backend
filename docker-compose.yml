@@ -1,0 +1,38 @@
+services:
+  # Se quiser voltar a usar o banco local: descomente da linha abaixo até o fim do bloco do postgres
+  # postgres:
+  #   image: postgres:15
+  #   container_name: invest-wealth-postgres
+  #   restart: always
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+  #     interval: 5s 
+  #     timeout: 5s
+  #     retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: invest-wealth-backend
+    restart: always
+    ports:
+      - "${PORT}:${PORT}"
+    env_file:       
+      - .env
+    # Se reativar o postgres local, descomente aqui também:
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+
+# Se reativar o postgres local, descomente o volume:
+# volumes:
+#   postgres_data:
