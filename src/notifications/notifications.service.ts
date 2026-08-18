@@ -1,15 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
+import { IsString, IsObject, IsOptional } from 'class-validator';
 import webpush, { PushSubscription as WpSubscription, SendResult } from 'web-push';
 import { PrismaService } from '../prisma/prisma.service';
 
-export interface SubscribeDto {
+export class SubscribeDto {
+  @IsString()
   endpoint: string;
+
+  @IsObject()
   keys: {
     p256dh: string;
     auth: string;
   };
+
+  @IsOptional()
   expirationTime?: number | null;
 }
 
