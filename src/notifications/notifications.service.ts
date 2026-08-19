@@ -2,7 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { IsString, IsObject, IsOptional } from 'class-validator';
-import webpush, { PushSubscription as WpSubscription, SendResult } from 'web-push';
+import webpush, {
+  PushSubscription as WpSubscription,
+  SendResult,
+} from 'web-push';
 import { PrismaService } from '../prisma/prisma.service';
 
 export class SubscribeDto {
@@ -33,10 +36,15 @@ export class NotificationsService {
     this.vapidPublicKey = this.config.get<string>('VAPID_PUBLIC_KEY') ?? '';
     this.vapidPrivateKey = this.config.get<string>('VAPID_PRIVATE_KEY') ?? '';
     this.vapidSubject =
-      this.config.get<string>('VAPID_SUBJECT') ?? 'mailto:contato@investwealth.app';
+      this.config.get<string>('VAPID_SUBJECT') ??
+      'mailto:contato@investwealth.app';
 
     if (this.vapidPublicKey && this.vapidPrivateKey) {
-      webpush.setVapidDetails(this.vapidSubject, this.vapidPublicKey, this.vapidPrivateKey);
+      webpush.setVapidDetails(
+        this.vapidSubject,
+        this.vapidPublicKey,
+        this.vapidPrivateKey,
+      );
       this.logger.log('VAPID configurado.');
     } else {
       this.logger.warn('VAPID keys ausentes — push notifications desativados.');
@@ -47,14 +55,14 @@ export class NotificationsService {
     return this.vapidPublicKey;
   }
 
-  async subscribe(dto: SubscribeDto) {
+  async subscribe(dto: SubscribeDto, userId: number) {
     const existing = await this.prisma.pushSubscription.findUnique({
       where: { endpoint: dto.endpoint },
     });
     if (existing) {
       return this.prisma.pushSubscription.update({
         where: { endpoint: dto.endpoint },
-        data: { p256dh: dto.keys.p256dh, auth: dto.keys.auth },
+        data: { p256dh: dto.keys.p256dh, auth: dto.keys.auth, userId },
       });
     }
     return this.prisma.pushSubscription.create({
@@ -62,13 +70,17 @@ export class NotificationsService {
         endpoint: dto.endpoint,
         p256dh: dto.keys.p256dh,
         auth: dto.keys.auth,
+        userId,
       },
     });
   }
 
-  async unsubscribe(endpoint: string) {
+  async unsubscribe(endpoint: string, userId: number) {
     try {
-      await this.prisma.pushSubscription.delete({ where: { endpoint } });
+      // Garante que o usuário só remove a própria subscription.
+      await this.prisma.pushSubscription.deleteMany({
+        where: { endpoint, userId },
+      });
     } catch {
       // já não existia — ok
     }
@@ -88,7 +100,9 @@ export class NotificationsService {
       return;
     }
 
-    const now = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const now = new Date().toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+    });
     const payload = JSON.stringify({
       title: 'InvestWealth — Atualização',
       body: `Notificação automática disparada às ${now}.`,

@@ -1,0 +1,7 @@
+allowBuilds:
+  '@prisma/engines': true
+  prisma: true
+  unrs-resolver: true
+
+overrides:
+  '@types/pg': ^8.23.0
