@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,17 +10,20 @@ datasource db {
 }
 
 model User {
-  id            Int        @id @default(autoincrement())
-  email         String     @unique
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
   name          String
   passwordHash  String
-  emailVerified Boolean    @default(false)
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   emailCodes        EmailCode[]
   refreshTokens     RefreshToken[]
   pushSubscriptions PushSubscription[]
+  walletAssets      WalletAsset[]
+  paymentReminders  PaymentReminder[]
+  preferences       UserPreferences?
 }
 
 model EmailCode {
@@ -71,4 +72,130 @@ model RefreshToken {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+enum WalletAssetType {
+  FII
+  ACAO
+  RENDA_FIXA
+  CRIPTO
+  ALUGUEL
+}
+
+model WalletAsset {
+  id            Int             @id @default(autoincrement())
+  userId        Int
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          WalletAssetType
+  name          String
+  ticker        String?
+  cnpj          String?
+  notes         String?         @db.Text
+  institution   String?
+  quantity      Decimal?        @db.Decimal(15, 8)
+  purchasePrice Decimal?        @db.Decimal(15, 2)
+  currentPrice  Decimal?        @db.Decimal(15, 2)
+  currentValue  Decimal?        @db.Decimal(15, 2)
+  acquiredAt    DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  fixedIncomeInstitution String?
+  fixedIncomeAmount      Decimal?  @db.Decimal(15, 2)
+  fixedIncomeRate        Decimal?  @db.Decimal(8, 4)
+  maturity               DateTime?
+
+  propertyValue Decimal? @db.Decimal(15, 2)
+  rentValue     Decimal? @db.Decimal(15, 2)
+  agencyFee     Decimal? @db.Decimal(8, 4)
+
+  dividendHistoricals DividendHistorical[]
+
+  @@index([userId, type])
+  @@index([userId, ticker])
+}
+
+model DividendHistorical {
+  id             String      @id @default(uuid()) @db.Uuid
+  walletAssetId  Int
+  walletAsset    WalletAsset @relation(fields: [walletAssetId], references: [id], onDelete: Cascade)
+  referenceYear  Int
+  referenceMonth Int
+  value          Decimal     @db.Decimal(15, 2)
+  yieldByMonth   Decimal     @db.Decimal(8, 4)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([walletAssetId, referenceYear, referenceMonth])
+  @@index([walletAssetId])
+  @@index([referenceYear, referenceMonth])
+  @@map("dividend_historical")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentCategory {
+  CONTA
+  IMPOSTO
+  INVESTIMENTO
+  CARTAO
+  FINANCIAMENTO
+  OUTROS
+}
+
+enum PaymentRecurrence {
+  ONCE
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum PaymentPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model PaymentReminder {
+  id            Int               @id @default(autoincrement())
+  userId        Int
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  notes         String?           @db.Text
+  category      PaymentCategory
+  amount        Decimal           @db.Decimal(15, 2)
+  dueDate       DateTime          @db.Date
+  status        PaymentStatus     @default(PENDING)
+  priority      PaymentPriority   @default(MEDIUM)
+  recurrence    PaymentRecurrence @default(ONCE)
+  paidAt        DateTime?
+  paymentMethod String?
+  receipt       String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, dueDate])
+}
+
+enum Theme {
+  DARK
+  LIGHT
+}
+
+model UserPreferences {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  theme     Theme    @default(DARK)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
