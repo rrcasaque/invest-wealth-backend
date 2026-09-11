@@ -21,10 +21,9 @@ export const REFRESH_COOKIE_NAME = 'iw_refresh';
 /** TTL do cookie do refresh token: 30 dias, em segundos. */
 const REFRESH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 
-
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) { }
+  constructor(private readonly auth: AuthService) {}
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
