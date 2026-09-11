@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
-  BadGatewayException,
   BadRequestException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 
 const execFileAsync = promisify(execFile);
@@ -52,17 +52,29 @@ interface StatusInvestDividend {
 
 @Injectable()
 export class StockService {
+  private readonly logger = new Logger(StockService.name);
+
   async getExpectativeDividendMonth(
     positions: StockPositionInput[],
   ): Promise<ExpectativeDividendMonth> {
     const quantities = this.groupFiiPositions(positions);
     const symbols = [...quantities.keys()];
-    const rates = await Promise.all(
-      symbols.map(
-        async (symbol) =>
-          [symbol, await this.fetchDividendRate(symbol)] as const,
-      ),
-    );
+    const rates: Array<readonly [string, number]> = [];
+    // O StatusInvest pode limitar requisições simultâneas originadas do IP
+    // compartilhado do Cloud Run. Processamos em pequenos lotes para evitar
+    // que uma importação de vários FIIs resulte em 502.
+    for (let index = 0; index < symbols.length; index += 2) {
+      const batch = symbols.slice(index, index + 2);
+      rates.push(
+        ...(await Promise.all(
+          batch.map(
+            async (symbol) =>
+              [symbol, await this.fetchDividendRate(symbol)] as const,
+          ),
+        )),
+      );
+      if (index + 2 < symbols.length) await this.sleep(150);
+    }
     const ratesBySymbol = new Map(rates);
     const assets = symbols.map((name) => ({
       name,
@@ -104,42 +116,55 @@ export class StockService {
 
   private async fetchDividendRate(symbol: string): Promise<number> {
     const url = `${STATUS_INVEST_BASE_URL}/${symbol.toLowerCase()}`;
-    try {
-      const { stdout } = await execFileAsync(
-        'curl',
-        [
-          '--silent',
-          '--show-error',
-          '--location',
-          '--compressed',
-          '--max-time',
-          '30',
-          '--user-agent',
-          STATUS_INVEST_HEADERS['User-Agent'],
-          '--header',
-          `Accept: ${STATUS_INVEST_HEADERS.Accept}`,
-          '--header',
-          `Accept-Language: ${STATUS_INVEST_HEADERS['Accept-Language']}`,
-          '--referer',
-          STATUS_INVEST_HEADERS.Referer,
-          '--write-out',
-          '\n%{http_code}',
-          url,
-        ],
-        { maxBuffer: 2 * 1024 * 1024 },
-      );
-      const statusSeparator = stdout.lastIndexOf('\n');
-      const html = stdout.slice(0, statusSeparator);
-      const status = Number(stdout.slice(statusSeparator + 1));
-      if (!status || status >= 400) throw new Error(`Status HTTP ${status}`);
+    let lastError: unknown;
 
-      const dividends = this.parseStatusInvestDividends(html).slice(0, 5);
-      return this.getMostFrequentRate(dividends);
-    } catch {
-      throw new BadGatewayException(
-        'Erro ao consultar Status Invest, atualize o scraper.',
-      );
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const { stdout } = await execFileAsync(
+          'curl',
+          [
+            '--silent',
+            '--show-error',
+            '--location',
+            '--compressed',
+            '--max-time',
+            '12',
+            '--user-agent',
+            STATUS_INVEST_HEADERS['User-Agent'],
+            '--header',
+            `Accept: ${STATUS_INVEST_HEADERS.Accept}`,
+            '--header',
+            `Accept-Language: ${STATUS_INVEST_HEADERS['Accept-Language']}`,
+            '--referer',
+            STATUS_INVEST_HEADERS.Referer,
+            '--write-out',
+            '\n%{http_code}',
+            url,
+          ],
+          { maxBuffer: 2 * 1024 * 1024 },
+        );
+        const statusSeparator = stdout.lastIndexOf('\n');
+        const html = stdout.slice(0, statusSeparator);
+        const status = Number(stdout.slice(statusSeparator + 1));
+        if (!status || status >= 400) throw new Error(`Status HTTP ${status}`);
+
+        const dividends = this.parseStatusInvestDividends(html).slice(0, 5);
+        return this.getMostFrequentRate(dividends);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await this.sleep(attempt * 500);
+      }
     }
+
+    this.logger.warn(
+      `Não foi possível consultar dividendos de ${symbol}; usando zero nesta resposta.`,
+      lastError instanceof Error ? lastError.message : String(lastError),
+    );
+    return 0;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private parseStatusInvestDividends(html: string): StatusInvestDividend[] {
