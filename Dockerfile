@@ -24,6 +24,8 @@ RUN pnpm install --prod --frozen-lockfile && \
 # --- ESTÁGIO 2: Runner ---
 FROM node:24-alpine AS runner
 
+RUN apk add --no-cache curl
+
 WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
