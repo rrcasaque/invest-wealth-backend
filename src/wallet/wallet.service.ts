@@ -45,10 +45,25 @@ export class WalletService {
   }
 
   async update(userId: number, id: number, dto: UpdateWalletAssetDto) {
-    await this.findOne(userId, id);
+    const existing = await this.prisma.walletAsset.findFirst({
+      where: { id, userId },
+    });
+    if (!existing) throw new NotFoundException('Ativo não encontrado.');
+
+    const data = this.assetData(dto);
+    const type = dto.type ?? existing.type;
+    if (
+      (type === WalletAssetType.FII || type === WalletAssetType.ACAO) &&
+      (dto.quantity !== undefined || dto.currentPrice !== undefined)
+    ) {
+      const quantity = dto.quantity ?? Number(existing.quantity ?? 0);
+      const currentPrice = dto.currentPrice ?? Number(existing.currentPrice ?? 0);
+      data.currentValue = quantity * currentPrice;
+    }
+
     const asset = await this.prisma.walletAsset.update({
       where: { id },
-      data: this.assetData(dto),
+      data,
       include: { dividendHistoricals: true },
     });
     return this.serializeAsset(asset);
@@ -90,17 +105,26 @@ export class WalletService {
 
   async importB3(userId: number, dto: ImportB3Dto) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(${userId})`);
+
       let createdAssets = 0;
       let updatedAssets = 0;
+      const positionsByAsset = new Map<string, B3PositionDto>();
 
       for (const position of dto.positions) {
+        const ticker = position.ticker.trim().toUpperCase();
+        const cnpj = position.cnpj.trim();
+        const key = ticker || cnpj;
+        if (key) positionsByAsset.set(key, { ...position, ticker, cnpj });
+      }
+
+      for (const position of positionsByAsset.values()) {
+        const ticker = position.ticker.trim().toUpperCase();
+        const cnpj = position.cnpj.trim();
         const existing = await tx.walletAsset.findFirst({
           where: {
             userId,
-            OR: [
-              { ticker: position.ticker.trim().toUpperCase() },
-              { cnpj: position.cnpj.trim() },
-            ],
+            ...(ticker ? { ticker } : { cnpj }),
           },
         });
 
