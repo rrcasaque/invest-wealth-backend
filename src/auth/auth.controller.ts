@@ -49,10 +49,9 @@ export class AuthController {
       if (result.refreshToken) {
         this.setRefreshCookie(res, result.refreshToken);
       }
-      // Não expõe o refresh token no corpo da resposta JSON.
-      const { refreshToken: _rt, ...body } = result;
-      void _rt;
-      return body;
+      // Retorna o refresh token no corpo para fallback de localStorage
+      // (em ambientes onde cookies podem ser bloqueados)
+      return result;
     });
   }
 
@@ -61,14 +60,21 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const incoming = this.readRefreshCookie(req);
+    // Tenta ler o refresh token do cookie (método preferido)
+    let incoming = this.readRefreshCookie(req);
+
+    // Fallback: se não houver cookie, tenta ler do header X-Refresh-Token
+    // (usado em ambientes onde cookies podem ser bloqueados, como alguns PWAs)
+    if (!incoming) {
+      incoming = req.headers['x-refresh-token'] as string | undefined;
+    }
+
     const result = await this.auth.refresh(incoming ?? '');
     if (result.refreshToken) {
       this.setRefreshCookie(res, result.refreshToken);
     }
-    const { refreshToken: _rt, ...body } = result;
-    void _rt;
-    return body;
+    // Retorna o refresh token no corpo para fallback de localStorage
+    return result;
   }
 
   @Post('logout')
@@ -93,12 +99,12 @@ export class AuthController {
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: REFRESH_COOKIE_MAX_AGE * 1000,
-      path: '/auth',
+      path: '/',
     });
   }
 
   private clearRefreshCookie(res: Response): void {
-    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' });
+    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
   }
 
   private readRefreshCookie(req: Request): string | undefined {
