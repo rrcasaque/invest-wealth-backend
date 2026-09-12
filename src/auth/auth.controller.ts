@@ -23,7 +23,7 @@ const REFRESH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(private readonly auth: AuthService) { }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -91,7 +91,7 @@ export class AuthController {
     res.cookie(REFRESH_COOKIE_NAME, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: REFRESH_COOKIE_MAX_AGE * 1000,
       path: '/auth',
     });
