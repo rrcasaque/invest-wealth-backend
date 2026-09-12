@@ -35,8 +35,9 @@ const TICKET_TTL = '5m';
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Janela de tolerância para reuso de refresh token rotacionado (permite
  *  recuperação de race conditions / retries de rede sem invalidar a sessão
- *  legítima). Após esse prazo, reuso = revogação imediata (possível roubo). */
-const REUSE_GRACE_MS = 30 * 1000;
+ *  legítima). Após esse prazo, reuso = revogação imediata (possível roubo).
+ *  Em desenvolvimento, usa 5 minutos para lidar com React Strict Mode. */
+const REUSE_GRACE_MS = process.env.NODE_ENV === 'production' ? 30 * 1000 : 5 * 60 * 1000;
 
 export interface AuthResponse {
   status: 'success' | 'error' | '2fa_required';
