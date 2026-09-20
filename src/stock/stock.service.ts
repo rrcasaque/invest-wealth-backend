@@ -50,9 +50,18 @@ interface StatusInvestDividend {
   paymentDate: string;
 }
 
+interface CacheEntry {
+  value: number;
+  expiresAt: number;
+}
+
 @Injectable()
 export class StockService {
   private readonly logger = new Logger(StockService.name);
+
+  // Cache em memória com TTL de 6 horas (dividendos não mudam com frequência)
+  private readonly dividendCache = new Map<string, CacheEntry>();
+  private readonly CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 
   async getExpectativeDividendMonth(
     positions: StockPositionInput[],
@@ -60,21 +69,42 @@ export class StockService {
     const quantities = this.groupFiiPositions(positions);
     const symbols = [...quantities.keys()];
     const rates: Array<readonly [string, number]> = [];
-    // O StatusInvest pode limitar requisições simultâneas originadas do IP
-    // compartilhado do Cloud Run. Processamos em pequenos lotes para evitar
-    // que uma importação de vários FIIs resulte em 502.
-    for (let index = 0; index < symbols.length; index += 2) {
-      const batch = symbols.slice(index, index + 2);
-      rates.push(
-        ...(await Promise.all(
-          batch.map(
-            async (symbol) =>
-              [symbol, await this.fetchDividendRate(symbol)] as const,
-          ),
-        )),
-      );
-      if (index + 2 < symbols.length) await this.sleep(150);
+
+    // Limpa cache expirado antes de processar
+    this.cleanExpiredCache();
+
+    this.logger.log(
+      `Processando ${symbols.length} símbolos. Cache tem ${this.dividendCache.size} entradas.`,
+    );
+
+    // O StatusInvest bloqueia IPs do Cloud Run com 403. Usamos cache agressivo
+    // e processamos apenas 1 símbolo por vez com delay de 2s entre requisições
+    // para minimizar detecção de bot.
+    let cacheHits = 0;
+    let cacheMisses = 0;
+
+    for (let index = 0; index < symbols.length; index += 1) {
+      const symbol = symbols[index];
+      const wasCached = this.dividendCache.has(symbol) &&
+        this.dividendCache.get(symbol)!.expiresAt > Date.now();
+
+      rates.push([symbol, await this.fetchDividendRate(symbol)] as const);
+
+      if (wasCached) {
+        cacheHits++;
+      } else {
+        cacheMisses++;
+        // Delay maior entre requisições NOVAS para evitar rate limiting
+        // (não precisa delay para cache hits)
+        if (index + 1 < symbols.length) {
+          await this.sleep(2000); // 2 segundos entre cada requisição nova
+        }
+      }
     }
+
+    this.logger.log(
+      `Processamento concluído: ${cacheHits} cache hits, ${cacheMisses} requisições novas`,
+    );
     const ratesBySymbol = new Map(rates);
     const assets = symbols.map((name) => ({
       name,
@@ -114,11 +144,28 @@ export class StockService {
     return quantities;
   }
 
+  private cleanExpiredCache(): void {
+    const now = Date.now();
+    for (const [symbol, entry] of this.dividendCache.entries()) {
+      if (entry.expiresAt < now) {
+        this.dividendCache.delete(symbol);
+      }
+    }
+  }
+
   private async fetchDividendRate(symbol: string): Promise<number> {
+    // Verifica cache primeiro
+    const cached = this.dividendCache.get(symbol);
+    if (cached && cached.expiresAt > Date.now()) {
+      this.logger.log(`Cache hit para ${symbol}: ${cached.value}`);
+      return cached.value;
+    }
+
     const url = `${STATUS_INVEST_BASE_URL}/${symbol.toLowerCase()}`;
     let lastError: unknown;
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    // Reduzido para 2 tentativas (ao invés de 3) para evitar muitas requisições
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const { stdout } = await execFileAsync(
           'curl',
@@ -128,7 +175,7 @@ export class StockService {
             '--location',
             '--compressed',
             '--max-time',
-            '12',
+            '15', // Aumentado de 12 para 15 segundos
             '--user-agent',
             STATUS_INVEST_HEADERS['User-Agent'],
             '--header',
@@ -137,6 +184,10 @@ export class StockService {
             `Accept-Language: ${STATUS_INVEST_HEADERS['Accept-Language']}`,
             '--referer',
             STATUS_INVEST_HEADERS.Referer,
+            '--header',
+            'Cache-Control: no-cache',
+            '--header',
+            'Pragma: no-cache',
             '--write-out',
             '\n%{http_code}',
             url,
@@ -146,18 +197,38 @@ export class StockService {
         const statusSeparator = stdout.lastIndexOf('\n');
         const html = stdout.slice(0, statusSeparator);
         const status = Number(stdout.slice(statusSeparator + 1));
-        if (!status || status >= 400) throw new Error(`Status HTTP ${status}`);
+
+        if (!status || status >= 400) {
+          throw new Error(`Status HTTP ${status}`);
+        }
 
         const dividends = this.parseStatusInvestDividends(html).slice(0, 5);
-        return this.getMostFrequentRate(dividends);
+        const rate = this.getMostFrequentRate(dividends);
+
+        // Salva no cache com TTL de 6 horas
+        this.dividendCache.set(symbol, {
+          value: rate,
+          expiresAt: Date.now() + this.CACHE_TTL_MS,
+        });
+
+        this.logger.log(`Dividendo de ${symbol} obtido com sucesso: ${rate}`);
+        return rate;
       } catch (error) {
         lastError = error;
-        if (attempt < 3) await this.sleep(attempt * 500);
+        this.logger.warn(
+          `Tentativa ${attempt}/2 falhou para ${symbol}:`,
+          error instanceof Error ? error.message : String(error),
+        );
+        // Delay maior entre retries (1s, 2s)
+        if (attempt < 2) {
+          await this.sleep(attempt * 1000);
+        }
       }
     }
 
-    this.logger.warn(
-      `Não foi possível consultar dividendos de ${symbol}; usando zero nesta resposta.`,
+    // Se falhar, retorna 0 mas NÃO cacheia o erro (para tentar novamente depois)
+    this.logger.error(
+      `Falha ao consultar dividendos de ${symbol} após 2 tentativas; usando zero.`,
       lastError instanceof Error ? lastError.message : String(lastError),
     );
     return 0;
