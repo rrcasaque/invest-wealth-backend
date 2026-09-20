@@ -19,6 +19,20 @@ const STATUS_INVEST_HEADERS = {
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
 };
 
+// BrAPI como fallback quando StatusInvest bloqueia (403)
+const BRAPI_BASE_URL = 'https://brapi.dev/api/quote';
+
+interface BrapiDividend {
+  date: string;
+  rate: number;
+}
+
+interface BrapiQuote {
+  dividendsData?: {
+    dividends?: BrapiDividend[];
+  };
+}
+
 export interface StockPositionInput {
   ticker: string;
   shares: number;
@@ -161,11 +175,40 @@ export class StockService {
       return cached.value;
     }
 
+    // Tenta StatusInvest primeiro (mais rápido quando funciona)
+    const statusInvestRate = await this.tryStatusInvest(symbol);
+    if (statusInvestRate !== null) {
+      // Salva no cache
+      this.dividendCache.set(symbol, {
+        value: statusInvestRate,
+        expiresAt: Date.now() + this.CACHE_TTL_MS,
+      });
+      return statusInvestRate;
+    }
+
+    // Fallback: tenta BrAPI se StatusInvest falhou
+    this.logger.log(`Tentando BrAPI como fallback para ${symbol}...`);
+    const brapiRate = await this.tryBrapi(symbol);
+    if (brapiRate !== null) {
+      // Salva no cache
+      this.dividendCache.set(symbol, {
+        value: brapiRate,
+        expiresAt: Date.now() + this.CACHE_TTL_MS,
+      });
+      return brapiRate;
+    }
+
+    // Se ambos falharam, retorna 0
+    this.logger.error(`Todas as fontes falharam para ${symbol}; usando zero.`);
+    return 0;
+  }
+
+  private async tryStatusInvest(symbol: string): Promise<number | null> {
     const url = `${STATUS_INVEST_BASE_URL}/${symbol.toLowerCase()}`;
     let lastError: unknown;
 
-    // Reduzido para 2 tentativas (ao invés de 3) para evitar muitas requisições
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    // Apenas 1 tentativa para StatusInvest (se falhar, vai para BrAPI)
+    for (let attempt = 1; attempt <= 1; attempt += 1) {
       try {
         const { stdout } = await execFileAsync(
           'curl',
@@ -205,33 +248,84 @@ export class StockService {
         const dividends = this.parseStatusInvestDividends(html).slice(0, 5);
         const rate = this.getMostFrequentRate(dividends);
 
-        // Salva no cache com TTL de 6 horas
-        this.dividendCache.set(symbol, {
-          value: rate,
-          expiresAt: Date.now() + this.CACHE_TTL_MS,
-        });
-
-        this.logger.log(`Dividendo de ${symbol} obtido com sucesso: ${rate}`);
+        this.logger.log(`StatusInvest: Dividendo de ${symbol} = ${rate}`);
         return rate;
       } catch (error) {
         lastError = error;
-        this.logger.warn(
-          `Tentativa ${attempt}/2 falhou para ${symbol}:`,
-          error instanceof Error ? error.message : String(error),
-        );
-        // Delay maior entre retries (1s, 2s)
-        if (attempt < 2) {
-          await this.sleep(attempt * 1000);
+        const errorMsg = error instanceof Error ? error.message : String(error);
+
+        // Se for 403, não tenta novamente (IP bloqueado)
+        if (errorMsg.includes('403')) {
+          this.logger.warn(`StatusInvest bloqueou requisição (403) para ${symbol}`);
+          return null;
         }
+
+        this.logger.warn(`StatusInvest falhou para ${symbol}: ${errorMsg}`);
+        return null;
       }
     }
 
-    // Se falhar, retorna 0 mas NÃO cacheia o erro (para tentar novamente depois)
-    this.logger.error(
-      `Falha ao consultar dividendos de ${symbol} após 2 tentativas; usando zero.`,
-      lastError instanceof Error ? lastError.message : String(lastError),
-    );
-    return 0;
+    return null;
+  }
+
+  private async tryBrapi(symbol: string): Promise<number | null> {
+    try {
+      // BrAPI usa fetch nativo (mais simples, não precisa curl)
+      const response = await fetch(
+        `${BRAPI_BASE_URL}/${symbol}?range=1y&interval=1mo&dividends=true`,
+        {
+          headers: {
+            'User-Agent': 'InvestWealth/1.0',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`BrAPI status ${response.status}`);
+      }
+
+      const data = (await response.json()) as { results?: BrapiQuote[] };
+      const quote = data.results?.[0];
+      const dividends = quote?.dividendsData?.dividends;
+
+      if (!dividends || dividends.length === 0) {
+        this.logger.warn(`BrAPI: Sem dados de dividendos para ${symbol}`);
+        return null;
+      }
+
+      // Pega os últimos 5 dividendos e calcula a moda
+      const recentDividends = dividends
+        .slice(-5)
+        .map((d) => d.rate)
+        .filter((rate) => typeof rate === 'number' && rate > 0);
+
+      if (recentDividends.length === 0) {
+        return null;
+      }
+
+      // Calcula a moda (valor mais frequente)
+      const counts = new Map<number, number>();
+      let mode = 0;
+      let modeCount = 0;
+
+      for (const rate of recentDividends) {
+        const count = (counts.get(rate) ?? 0) + 1;
+        counts.set(rate, count);
+        if (count > modeCount) {
+          mode = rate;
+          modeCount = count;
+        }
+      }
+
+      this.logger.log(`BrAPI: Dividendo de ${symbol} = ${mode}`);
+      return mode;
+    } catch (error) {
+      this.logger.warn(
+        `BrAPI falhou para ${symbol}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      return null;
+    }
   }
 
   private sleep(ms: number): Promise<void> {
