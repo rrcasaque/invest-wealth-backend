@@ -104,6 +104,10 @@ export class AuthController {
   // ---------- Helpers de cookie ----------
 
   private setRefreshCookie(res: Response, token: string): void {
+    // Remove cookie legado com path '/auth' (versão antiga). Se existir,
+    // o navegador envia ambos e o parser lê o antigo (revogado) primeiro,
+    // causando detecção falsa de "reuso de refresh token".
+    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' });
     res.cookie(REFRESH_COOKIE_NAME, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -115,9 +119,26 @@ export class AuthController {
 
   private clearRefreshCookie(res: Response): void {
     res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
+    // Também remove o legado para garantir logout completo
+    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/auth' });
   }
 
   private readRefreshCookie(req: Request): string | undefined {
-    return req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
+    // Quando existem cookies duplicados (legado path='/auth' + atual path='/'),
+    // o cookie-parser retorna o PRIMEIRO do header — que é o legado (revogado),
+    // pois paths mais específicos são enviados antes. Parseamos o header
+    // manualmente e usamos o ÚLTIMO valor, que corresponde ao path '/'
+    // (o token atual e válido).
+    const header = req.headers.cookie;
+    if (!header) return undefined;
+
+    const values: string[] = [];
+    for (const part of header.split(';')) {
+      const [name, ...rest] = part.trim().split('=');
+      if (name === REFRESH_COOKIE_NAME && rest.length > 0) {
+        values.push(decodeURIComponent(rest.join('=')));
+      }
+    }
+    return values.at(-1);
   }
 }
