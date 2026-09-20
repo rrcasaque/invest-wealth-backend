@@ -36,8 +36,18 @@ export class AuthController {
   }
 
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.login(dto);
+    // Se o login retornar um refresh token (login direto sem 2FA),
+    // seta o cookie HttpOnly
+    if (result.refreshToken) {
+      this.setRefreshCookie(res, result.refreshToken);
+    }
+    // Retorna o refresh token no corpo para fallback de localStorage
+    return result;
   }
 
   @Post('login-2fa')
@@ -62,6 +72,7 @@ export class AuthController {
   ) {
     // Tenta ler o refresh token do cookie (método preferido)
     let incoming = this.readRefreshCookie(req);
+    const hasCookie = !!incoming;
 
     // Fallback: se não houver cookie, tenta ler do header X-Refresh-Token
     // (usado em ambientes onde cookies podem ser bloqueados, como alguns PWAs)
@@ -69,8 +80,15 @@ export class AuthController {
       incoming = req.headers['x-refresh-token'] as string | undefined;
     }
 
+    console.log('[Auth] Refresh request:', {
+      hasCookie,
+      hasHeader: !!req.headers['x-refresh-token'],
+      hasToken: !!incoming,
+    });
+
     const result = await this.auth.refresh(incoming ?? '');
     if (result.refreshToken) {
+      console.log('[Auth] Setting new refresh cookie');
       this.setRefreshCookie(res, result.refreshToken);
     }
     // Retorna o refresh token no corpo para fallback de localStorage
